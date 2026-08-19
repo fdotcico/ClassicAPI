@@ -32,6 +32,18 @@ A successful initialization ends with:
 [ClassicAPI-WoWSilicon] Load complete
 ```
 
+For runtime bisection, set `CLASSICAPI_WOWSILICON_HOOKS` before launching:
+
+| Value | Behavior |
+| --- | --- |
+| `all` or unset | Install the core and feature hooks. |
+| `core` | Install only the five core initialization hooks. |
+| `loader-only` | Exercise DLL mapping and `Load()` without initializing MinHook or installing hooks. |
+
+The selected mode is written to the diagnostic log. These modes allow the
+WoWSilicon test to isolate a hook-related deadlock without rebuilding or
+changing `dlls.txt`.
+
 The DLL is still a 32-bit Windows binary. Build it on a Windows runner with:
 
 ```powershell

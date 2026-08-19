@@ -42,11 +42,36 @@ namespace {
 // harmless and initialization never runs concurrently.
 volatile LONG g_loadState = 0; // 0=new, 1=loading, 2=loaded, -1=failed
 
+enum class HookMode {
+    All,
+    Core,
+    LoaderOnly,
+};
+
 void TraceLoad(const char *message) {
     OutputDebugStringA("[ClassicAPI-WoWSilicon] ");
     OutputDebugStringA(message);
     OutputDebugStringA("\n");
     Debug::Log::Printf("[ClassicAPI-WoWSilicon] %s", message);
+}
+
+HookMode ReadHookMode() {
+    char value[32] = {0};
+    const DWORD length = GetEnvironmentVariableA(
+        "CLASSICAPI_WOWSILICON_HOOKS", value, sizeof(value));
+    if (length == 0)
+        return HookMode::All;
+    if (length >= sizeof(value)) {
+        TraceLoad("CLASSICAPI_WOWSILICON_HOOKS is too long; using all");
+        return HookMode::All;
+    }
+    if (lstrcmpiA(value, "core") == 0)
+        return HookMode::Core;
+    if (lstrcmpiA(value, "loader-only") == 0)
+        return HookMode::LoaderOnly;
+    if (lstrcmpiA(value, "all") != 0)
+        TraceLoad("unrecognized hook mode; using all");
+    return HookMode::All;
 }
 
 bool InstallHook(uintptr_t address, LPVOID hook, LPVOID *original,
@@ -173,6 +198,17 @@ extern "C" __declspec(dllexport) DWORD Load() {
 
     TraceLoad("Load begin (outside DllMain, on loader main thread)");
 
+    const HookMode hookMode = ReadHookMode();
+    if (hookMode == HookMode::LoaderOnly) {
+        TraceLoad("hook mode: loader-only");
+        InterlockedExchange(&g_loadState, 2);
+        TraceLoad("Load complete (no hooks installed)");
+        return 0;
+    }
+
+    TraceLoad(hookMode == HookMode::Core ? "hook mode: core"
+                                         : "hook mode: all");
+
     MH_STATUS status = MH_Initialize();
     if (status != MH_OK) {
         Debug::Log::Printf(
@@ -219,12 +255,15 @@ extern "C" __declspec(dllexport) DWORD Load() {
 
     TraceLoad("core hooks installed");
 
-    // All feature hooks declared via Game::HookAutoRegister at file scope in
-    // their respective modules.
-    if (!Game::RunHookRegistrations())
-        return FailLoad("feature hook registration");
-
-    TraceLoad("feature hooks installed");
+    if (hookMode == HookMode::All) {
+        // All feature hooks declared via Game::HookAutoRegister at file scope
+        // in their respective modules.
+        if (!Game::RunHookRegistrations())
+            return FailLoad("feature hook registration");
+        TraceLoad("feature hooks installed");
+    } else {
+        TraceLoad("feature hooks skipped");
+    }
     InterlockedExchange(&g_loadState, 2);
     TraceLoad("Load complete");
     return 0;
