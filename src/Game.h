@@ -350,7 +350,7 @@ void Write(const char *line);
 // `static const Game::ModuleAutoRegister _r{&RegisterLuaFunctions};`, which
 // chains itself onto a global list at DLL-load time. `RunModuleRegistrations`
 // is called once from the LoadScriptFunctions post-hook to fire them all,
-// so DllMain.cpp doesn't need to know the modules exist.
+// so the loader entrypoint doesn't need to know the modules exist.
 //
 // Order is unspecified (LIFO of static-init order across TUs). Modules must
 // not depend on each other's registration side effects.
@@ -381,19 +381,19 @@ void RunGlueModuleRegistrations();
 
 // Declarative MinHook registration. Each feature module declares a
 // file-scope `static const Game::HookAutoRegister _hookreg{target,
-// &hook_fn, reinterpret_cast<void**>(&original_fn)};` and DllMain's
-// `RunHookRegistrations` walks the list once after `MH_Initialize`,
+// &hook_fn, reinterpret_cast<void**>(&original_fn)};` and the exported
+// `Load()` entrypoint walks the list once after `MH_Initialize`,
 // installing each hook with `MH_CreateHook` + `MH_EnableHook`.
 //
 // Same lifetime rules as ModuleAutoRegister: constructors chain onto
-// a static-init list before DllMain runs, the linker keeps the OBJ
+// a static-init list before Load() runs, the linker keeps the OBJ
 // because the constructor has side effects, and order across TUs is
 // undefined but doesn't matter here (hooks are independent).
 //
-// Use only for feature hooks. The three core engine-init hooks in
-// DllMain (FrameScript_Initialize / LoadScriptFunctions /
-// Frame::RegisterEvent) have inline logic that interleaves with the
-// hook chain and stays in DllMain.
+// Use only for feature hooks. The core engine-init hooks in DllMain.cpp
+// (FrameScript_Initialize / LoadScriptFunctions / LoadGlueScriptFunctions /
+// Frame::RegisterEvent) have inline logic and are installed directly by
+// the exported Load() entrypoint.
 struct HookAutoRegister {
     HookAutoRegister(uintptr_t target, void *hook, void **original);
     uintptr_t target;
@@ -403,7 +403,7 @@ struct HookAutoRegister {
 };
 
 // Installs every registered hook. Returns `false` and stops on first
-// failure — caller (DllMain) should propagate by returning FALSE.
+// failure — caller (Load) should propagate a non-zero result.
 bool RunHookRegistrations();
 
 } // namespace Game
