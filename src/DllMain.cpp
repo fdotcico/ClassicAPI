@@ -295,6 +295,11 @@ extern "C" __declspec(dllexport) DWORD Load() {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
+    } else if (reason == DLL_PROCESS_DETACH) {
+        // Preserve upstream's final cache flush. MinHook teardown remains
+        // intentionally omitted here: this branch keeps hook lifecycle work
+        // out of DllMain's loader-lock context, and the DLL is process-lifetime.
+        Player::NameCache::Flush();
     }
     return TRUE;
 }
