@@ -44,6 +44,7 @@ volatile LONG g_loadState = 0; // 0=new, 1=loading, 2=loaded, -1=failed
 
 enum class HookMode {
     All,
+    AllNoFrameRegister,
     Core,
     CoreNoFrameRegister,
     LoaderOnly,
@@ -68,6 +69,8 @@ HookMode ReadHookMode() {
     }
     if (lstrcmpiA(value, "core") == 0)
         return HookMode::Core;
+    if (lstrcmpiA(value, "all-no-frame-register") == 0)
+        return HookMode::AllNoFrameRegister;
     if (lstrcmpiA(value, "core-no-frame-register") == 0)
         return HookMode::CoreNoFrameRegister;
     if (lstrcmpiA(value, "loader-only") == 0)
@@ -209,7 +212,9 @@ extern "C" __declspec(dllexport) DWORD Load() {
         return 0;
     }
 
-    if (hookMode == HookMode::Core)
+    if (hookMode == HookMode::AllNoFrameRegister)
+        TraceLoad("hook mode: all-no-frame-register");
+    else if (hookMode == HookMode::Core)
         TraceLoad("hook mode: core");
     else if (hookMode == HookMode::CoreNoFrameRegister)
         TraceLoad("hook mode: core-no-frame-register");
@@ -253,7 +258,8 @@ extern "C" __declspec(dllexport) DWORD Load() {
             "LoadGlueScriptFunctions"))
         return FailLoad("LoadGlueScriptFunctions");
 
-    if (hookMode != HookMode::CoreNoFrameRegister) {
+    if (hookMode != HookMode::CoreNoFrameRegister &&
+        hookMode != HookMode::AllNoFrameRegister) {
         if (!InstallHook(
                 Offsets::FUN_FRAME_REGISTER_EVENT,
                 reinterpret_cast<LPVOID>(FrameRegisterEvent_h),
@@ -266,7 +272,8 @@ extern "C" __declspec(dllexport) DWORD Load() {
 
     TraceLoad("core hooks installed");
 
-    if (hookMode == HookMode::All) {
+    if (hookMode == HookMode::All ||
+        hookMode == HookMode::AllNoFrameRegister) {
         // All feature hooks declared via Game::HookAutoRegister at file scope
         // in their respective modules.
         if (!Game::RunHookRegistrations())
