@@ -1,5 +1,26 @@
 # ClassicAPI
 
+> [!IMPORTANT]
+> ### WoWSilicon / Apple Silicon investigation
+>
+> This fork retains an experimental
+> [`wowsilicon/deferred-load`](https://github.com/fdotcico/ClassicAPI/tree/wowsilicon/deferred-load)
+> branch. It moves MinHook and feature-hook initialization out of `DllMain`
+> into VanillaFixes' exported `Load()` callback and adds runtime hook-isolation
+> modes for Wine/Rosetta troubleshooting.
+>
+> **Status (2026-08-19):** the branch was useful for diagnosis, but controlled
+> testing showed that both upstream ClassicAPI and the deferred-load build
+> completed 6/6 runs after event-amplification bugs were fixed in pfQuest and
+> QuestProgressShare. This fork therefore does **not** claim that ClassicAPI was
+> the root cause, and the experimental build is not required for those resolved
+> hangs.
+>
+> Related fixes:
+> [pfQuest #3](https://github.com/brues-code/pfQuest/pull/3) and
+> [QuestProgressShare #11](https://github.com/graved/QuestProgressShare/pull/11).
+> The default `master` branch otherwise remains aligned with upstream.
+
 A small DLL for World of Warcraft 1.12.1 (Vanilla / Turtle WoW) that adds a
 collection of Lua API calls Blizzard never exposed in 1.12 but which make
 addon authoring noticeably less painful — primarily for backporting addons
