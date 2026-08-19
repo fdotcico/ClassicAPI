@@ -45,6 +45,7 @@ volatile LONG g_loadState = 0; // 0=new, 1=loading, 2=loaded, -1=failed
 enum class HookMode {
     All,
     Core,
+    CoreNoFrameRegister,
     LoaderOnly,
 };
 
@@ -67,6 +68,8 @@ HookMode ReadHookMode() {
     }
     if (lstrcmpiA(value, "core") == 0)
         return HookMode::Core;
+    if (lstrcmpiA(value, "core-no-frame-register") == 0)
+        return HookMode::CoreNoFrameRegister;
     if (lstrcmpiA(value, "loader-only") == 0)
         return HookMode::LoaderOnly;
     if (lstrcmpiA(value, "all") != 0)
@@ -206,8 +209,12 @@ extern "C" __declspec(dllexport) DWORD Load() {
         return 0;
     }
 
-    TraceLoad(hookMode == HookMode::Core ? "hook mode: core"
-                                         : "hook mode: all");
+    if (hookMode == HookMode::Core)
+        TraceLoad("hook mode: core");
+    else if (hookMode == HookMode::CoreNoFrameRegister)
+        TraceLoad("hook mode: core-no-frame-register");
+    else
+        TraceLoad("hook mode: all");
 
     MH_STATUS status = MH_Initialize();
     if (status != MH_OK) {
@@ -246,12 +253,16 @@ extern "C" __declspec(dllexport) DWORD Load() {
             "LoadGlueScriptFunctions"))
         return FailLoad("LoadGlueScriptFunctions");
 
-    if (!InstallHook(
-            Offsets::FUN_FRAME_REGISTER_EVENT,
-            reinterpret_cast<LPVOID>(FrameRegisterEvent_h),
-            reinterpret_cast<LPVOID *>(&FrameRegisterEvent_o),
-            "FrameRegisterEvent"))
-        return FailLoad("FrameRegisterEvent");
+    if (hookMode != HookMode::CoreNoFrameRegister) {
+        if (!InstallHook(
+                Offsets::FUN_FRAME_REGISTER_EVENT,
+                reinterpret_cast<LPVOID>(FrameRegisterEvent_h),
+                reinterpret_cast<LPVOID *>(&FrameRegisterEvent_o),
+                "FrameRegisterEvent"))
+            return FailLoad("FrameRegisterEvent");
+    } else {
+        TraceLoad("hook skipped: FrameRegisterEvent");
+    }
 
     TraceLoad("core hooks installed");
 
