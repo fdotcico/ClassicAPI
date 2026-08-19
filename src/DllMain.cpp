@@ -15,6 +15,7 @@
 #include "Game.h"
 #include "MinHook.h"
 #include "Offsets.h"
+#include "debug/Log.h"
 #include "event/Custom.h"
 #include "nameplate/Walk.h"
 #include "player/NameCache.h"
@@ -32,6 +33,58 @@ static Game::LoadGlueScriptFunctions_t LoadGlueScriptFunctions_o = nullptr;
 using FrameRegisterEvent_t = void(__fastcall *)(void *frame, void *edx,
                                                  const char *eventName);
 static FrameRegisterEvent_t FrameRegisterEvent_o = nullptr;
+
+namespace {
+
+// VanillaFixes loads every entry in dlls.txt while the process is suspended,
+// then calls an optional exported Load() later from WoW's main thread. Keep
+// the state machine independent of C++ runtime locks so duplicate calls are
+// harmless and initialization never runs concurrently.
+volatile LONG g_loadState = 0; // 0=new, 1=loading, 2=loaded, -1=failed
+
+void TraceLoad(const char *message) {
+    OutputDebugStringA("[ClassicAPI-WoWSilicon] ");
+    OutputDebugStringA(message);
+    OutputDebugStringA("\n");
+    Debug::Log::Printf("[ClassicAPI-WoWSilicon] %s", message);
+}
+
+bool InstallHook(uintptr_t address, LPVOID hook, LPVOID *original,
+                 const char *name) {
+    auto *target = reinterpret_cast<LPVOID>(address);
+    MH_STATUS status = MH_CreateHook(target, hook, original);
+    if (status != MH_OK) {
+        Debug::Log::Printf(
+            "[ClassicAPI-WoWSilicon] MH_CreateHook(%s) failed: %s", name,
+            MH_StatusToString(status));
+        return false;
+    }
+
+    status = MH_EnableHook(target);
+    if (status != MH_OK) {
+        Debug::Log::Printf(
+            "[ClassicAPI-WoWSilicon] MH_EnableHook(%s) failed: %s", name,
+            MH_StatusToString(status));
+        return false;
+    }
+
+    Debug::Log::Printf("[ClassicAPI-WoWSilicon] hook installed: %s", name);
+    return true;
+}
+
+DWORD FailLoad(const char *phase) {
+    Debug::Log::Printf("[ClassicAPI-WoWSilicon] Load failed: %s", phase);
+    OutputDebugStringA("[ClassicAPI-WoWSilicon] Load failed\n");
+
+    // The DLL remains mapped when an exported Load() reports failure, unlike
+    // a FALSE return from DllMain. Remove any partial hook set explicitly.
+    MH_DisableHook(MH_ALL_HOOKS);
+    MH_Uninitialize();
+    InterlockedExchange(&g_loadState, -1);
+    return 1;
+}
+
+} // namespace
 
 static void __fastcall InvalidFunctionPtrCheck_h() {}
 
@@ -106,47 +159,80 @@ static void __fastcall FrameRegisterEvent_h(void *frame, void *edx,
     FrameRegisterEvent_o(frame, edx, eventName);
 }
 
+// VanillaFixes contract: GetProcAddress(module, "Load") and call it on the
+// main thread after every additional DLL has left DllMain. Zero means success.
+extern "C" __declspec(dllexport) DWORD Load() {
+    const LONG previous = InterlockedCompareExchange(&g_loadState, 1, 0);
+    if (previous == 2)
+        return 0;
+    if (previous != 0) {
+        TraceLoad(previous == 1 ? "duplicate Load while initialization is active"
+                                : "duplicate Load after initialization failed");
+        return 1;
+    }
+
+    TraceLoad("Load begin (outside DllMain, on loader main thread)");
+
+    MH_STATUS status = MH_Initialize();
+    if (status != MH_OK) {
+        Debug::Log::Printf(
+            "[ClassicAPI-WoWSilicon] MH_Initialize failed: %s",
+            MH_StatusToString(status));
+        InterlockedExchange(&g_loadState, -1);
+        return 1;
+    }
+    TraceLoad("MinHook initialized");
+
+    if (!InstallHook(
+            Offsets::FUN_INVALID_FUNCTION_PTR_CHECK,
+            reinterpret_cast<LPVOID>(InvalidFunctionPtrCheck_h), nullptr,
+            "InvalidFunctionPtrCheck"))
+        return FailLoad("InvalidFunctionPtrCheck");
+
+    if (!InstallHook(
+            Offsets::FUN_FRAME_SCRIPT_INITIALIZE,
+            reinterpret_cast<LPVOID>(FrameScript_Initialize_h),
+            reinterpret_cast<LPVOID *>(&FrameScript_Initialize_o),
+            "FrameScript_Initialize"))
+        return FailLoad("FrameScript_Initialize");
+
+    if (!InstallHook(
+            Offsets::FUN_LOAD_SCRIPT_FUNCTIONS,
+            reinterpret_cast<LPVOID>(LoadScriptFunctions_h),
+            reinterpret_cast<LPVOID *>(&LoadScriptFunctions_o),
+            "LoadScriptFunctions"))
+        return FailLoad("LoadScriptFunctions");
+
+    if (!InstallHook(
+            Offsets::FUN_LOAD_GLUE_SCRIPT_FUNCTIONS,
+            reinterpret_cast<LPVOID>(LoadGlueScriptFunctions_h),
+            reinterpret_cast<LPVOID *>(&LoadGlueScriptFunctions_o),
+            "LoadGlueScriptFunctions"))
+        return FailLoad("LoadGlueScriptFunctions");
+
+    if (!InstallHook(
+            Offsets::FUN_FRAME_REGISTER_EVENT,
+            reinterpret_cast<LPVOID>(FrameRegisterEvent_h),
+            reinterpret_cast<LPVOID *>(&FrameRegisterEvent_o),
+            "FrameRegisterEvent"))
+        return FailLoad("FrameRegisterEvent");
+
+    TraceLoad("core hooks installed");
+
+    // All feature hooks declared via Game::HookAutoRegister at file scope in
+    // their respective modules.
+    if (!Game::RunHookRegistrations())
+        return FailLoad("feature hook registration");
+
+    TraceLoad("feature hooks installed");
+    InterlockedExchange(&g_loadState, 2);
+    TraceLoad("Load complete");
+    return 0;
+}
+
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
-
-        if (MH_Initialize() != MH_OK)
-            return FALSE;
-
-        auto *target = reinterpret_cast<LPVOID>(Offsets::FUN_INVALID_FUNCTION_PTR_CHECK);
-        if (MH_CreateHook(target, reinterpret_cast<LPVOID>(InvalidFunctionPtrCheck_h), nullptr) != MH_OK)
-            return FALSE;
-        if (MH_EnableHook(target) != MH_OK)
-            return FALSE;
-
-        // Four core init hooks stay here — each runs glue logic
-        // (PrepareForReload, RunModuleRegistrations,
-        // RunGlueModuleRegistrations, EnableWrites, RetryClaims)
-        // that's tightly coupled to DllMain state, so a declarative
-        // HookAutoRegister wouldn't simplify them.
-        HOOK_FUNCTION(Offsets::FUN_FRAME_SCRIPT_INITIALIZE, FrameScript_Initialize_h,
-                      FrameScript_Initialize_o);
-        HOOK_FUNCTION(Offsets::FUN_LOAD_SCRIPT_FUNCTIONS, LoadScriptFunctions_h,
-                      LoadScriptFunctions_o);
-        HOOK_FUNCTION(Offsets::FUN_LOAD_GLUE_SCRIPT_FUNCTIONS,
-                      LoadGlueScriptFunctions_h, LoadGlueScriptFunctions_o);
-        HOOK_FUNCTION(Offsets::FUN_FRAME_REGISTER_EVENT, FrameRegisterEvent_h,
-                      FrameRegisterEvent_o);
-
-        // All feature hooks declared via `Game::HookAutoRegister` at
-        // file scope in their respective modules.
-        if (!Game::RunHookRegistrations())
-            return FALSE;
-    } else if (reason == DLL_PROCESS_DETACH) {
-        // Clean /quit path. Flush before MH_Uninitialize — the cache's
-        // file I/O uses Win32 directly (no MinHook involvement), so
-        // either order works in practice, but flushing first lets us
-        // bail early if the hook teardown ever grows side effects.
-        // Hard process termination (task manager kill) bypasses this
-        // path; that's an inherent OS limitation, and the 5-minute
-        // backstop flush in Remember() covers the worst case there.
-        Player::NameCache::Flush();
-        MH_Uninitialize();
     }
     return TRUE;
 }
